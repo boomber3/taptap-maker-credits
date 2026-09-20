@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "TapTap 制造 · 积分消耗统计",
+  "version": "1.10.3",
+  "description": "统计 TapTap 制造账号的积分消耗：按小时、按天、按项目生成折线图。数据取自官方接口，只保存在本机。",
+  "minimum_chrome_version": "110",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://maker.taptap.cn/*"],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://maker.taptap.cn/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://maker.taptap.cn/*"],
+      "js": ["src/panel.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/dashboard.html",
+        "src/dashboard.js",
+        "src/dashboard.css",
+        "src/chart.js",
+        "src/util.js",
+        "assets/mascot.png",
+        "assets/faces.png"
+      ],
+      "matches": ["https://maker.taptap.cn/*"]
+    }
+  ],
+  "action": {
+    "default_title": "查看积分消耗统计",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

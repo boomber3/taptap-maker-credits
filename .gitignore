@@ -1,0 +1,9 @@
+# 这个仓库只放扩展本体（manifest.json / src / assets / icons）。
+# 开发脚本（测试、素材生成、本地预览服务）不随仓库分发 ——
+# 它们既不影响安装，也避免把本地数据一并带出去。
+tools/
+
+# 编辑器 / 系统杂物
+.DS_Store
+Thumbs.db
+*.zip

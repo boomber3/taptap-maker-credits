@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TapTap 制造 · 积分消耗</title>
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div class="topbar-main">
+          <h1>积分消耗</h1>
+          <div class="status-row">
+            <span class="sub" id="status-line">正在读取数据…</span>
+            <button type="button" class="icon-btn" id="sync-btn" title="刷新" aria-label="刷新数据">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="currentColor"
+                  d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="notice" id="notice" hidden></div>
+
+      <div class="filters" id="filters" role="group" aria-label="时间范围">
+        <button type="button" class="chip" data-range="today">今天</button>
+        <button type="button" class="chip" data-range="7">近 7 天</button>
+        <button type="button" class="chip" data-range="30">近 30 天</button>
+        <button type="button" class="chip" data-range="90">近 90 天</button>
+        <button type="button" class="chip" data-range="all">全部</button>
+      </div>
+
+      <section class="hero-card">
+        <div class="hero-sub" id="hero-sub"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2 id="trend-title">消耗趋势</h2>
+            <p class="card-sub" id="trend-sub"></p>
+          </div>
+          <button type="button" class="icon-btn" id="trend-expand" title="放大查看" aria-label="放大查看">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z"
+              />
+            </svg>
+          </button>
+        </div>
+        <div id="trend-chart"></div>
+      </section>
+
+      <section class="tiles" id="tiles"></section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>消耗构成</h2>
+            <p class="card-sub" id="kind-sub"></p>
+          </div>
+        </div>
+        <div class="kind-row" id="kind-row"></div>
+        <div class="kind-bar" id="kind-bar"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>各类型消耗趋势</h2>
+            <p class="card-sub" id="kind-trend-sub"></p>
+          </div>
+          <button type="button" class="icon-btn" id="kind-expand" title="放大查看" aria-label="放大查看">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z"
+              />
+            </svg>
+          </button>
+        </div>
+        <div id="kind-chart"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>项目对比</h2>
+            <p class="card-sub" id="project-sub"></p>
+          </div>
+          <div class="card-actions">
+            <button type="button" class="ghost-btn" id="project-reset">重置</button>
+            <button
+              type="button"
+              class="icon-btn"
+              id="project-expand"
+              title="放大查看"
+              aria-label="放大查看"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="picker" id="project-picker"></div>
+        <div id="project-chart"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>明细</h2>
+            <p class="card-sub">与图表同源，逐格可核对</p>
+          </div>
+          <button type="button" class="ghost-btn" id="table-btn" aria-expanded="false">展开</button>
+        </div>
+        <div id="table-wrap" hidden></div>
+      </section>
+    </div>
+
+    <script type="module" src="dashboard.js"></script>
+  </body>
+</html>

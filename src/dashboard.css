@@ -1,0 +1,926 @@
+/*
+ * 设计令牌来自数据可视化配色规范：
+ *   - 分类色按固定顺序取用，不循环、不按排名重新着色
+ *   - 深色不是浅色的自动反转，而是同一批色相针对深色底重新取的步进
+ *   - 浅色底下 aqua / yellow / magenta 对比度低于 3:1，规范要求配可见标签
+ *     或表格视图来兜底 —— 本页面两者都有
+ */
+
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --gridline: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+  --wash: rgba(11, 11, 11, 0.04);
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+
+  --status-critical: #d03b3b;
+  --status-good: #0ca30c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) {
+    color-scheme: dark;
+
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+    --wash: rgba(255, 255, 255, 0.06);
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --wash: rgba(255, 255, 255, 0.06);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+
+/* 嵌在站点页面的面板里时（?embed=1）：交给外层容器撑背景和尺寸，
+   并把标题让给面板自己的标题栏，免得同一行出现两个「积分消耗」 */
+:root.is-embedded body {
+  background: transparent;
+}
+
+:root.is-embedded .page {
+  max-width: none;
+  padding: 14px 16px 26px;
+}
+
+/* 浮层那份只用来放大显示图表，仪表盘本体整个不露面 ——
+   不然会先渲染一整页仪表盘、再突然盖上弹窗，看着就是「闪一下再变」。
+   弹窗挂在 body 上，不受这条影响。 */
+:root.is-overlay .page {
+  display: none;
+}
+
+:root.is-embedded .topbar {
+  margin-bottom: 14px;
+}
+
+:root.is-embedded .topbar h1 {
+  display: none;
+}
+
+:root.is-embedded .hero-card {
+  padding: 15px 16px;
+}
+
+/* 面板只有四百来像素宽，一行三个指标得再收一点才不挤 */
+:root.is-embedded .hero-sub {
+  gap: 12px;
+}
+
+:root.is-embedded .sub-value {
+  font-size: 19px;
+}
+
+:root.is-embedded .sub-value.is-lead {
+  font-size: 22px;
+}
+
+:root.is-embedded .sub-note {
+  font-size: 11.5px;
+}
+
+/* ------------------------------------------------------------------ 顶栏 */
+
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.topbar-main {
+  flex: 1; /* 不撑满的话状态文字会被挤成窄窄一条，折成好几行 */
+  min-width: 0;
+}
+
+/* 状态文字和刷新图标排在同一行，图标跟文字一个量级，不抢视线 */
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.topbar .sub {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.topbar .sub.is-error {
+  color: var(--status-critical);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--wash);
+  color: var(--text-primary);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 1px;
+}
+
+.icon-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.icon-btn svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+
+.icon-btn.is-spinning svg {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn.is-spinning svg {
+    animation: none;
+  }
+}
+
+.ghost-btn,
+.primary-btn {
+  font: inherit;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  flex: none;
+  white-space: nowrap; /* 卡片头部标题一长，按钮就会被挤成两行 */
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.ghost-btn {
+  background: var(--surface-1);
+  color: var(--text-secondary);
+}
+
+.ghost-btn:hover {
+  background: var(--wash);
+}
+
+.ghost-btn[aria-pressed='true'] {
+  color: var(--text-primary);
+  border-color: var(--baseline);
+}
+
+.primary-btn {
+  background: var(--text-primary);
+  color: var(--surface-1);
+  border-color: var(--text-primary);
+}
+
+.primary-btn:hover {
+  opacity: 0.86;
+}
+
+.primary-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------------------------------------------------------------- 提示 */
+
+.notice {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--series-1);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 20px;
+}
+
+.notice p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.notice .notice-title {
+  margin-bottom: 6px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.notice a.primary-btn {
+  display: inline-block;
+  margin-top: 14px;
+  text-decoration: none;
+}
+
+.notice ol {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.notice li {
+  margin: 3px 0;
+}
+
+/* ------------------------------------------------------- 时间范围筛选行 */
+/* 规范：筛选控件排成一行，位于所有图表之上，并统辖下方全部内容 */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 22px;
+}
+
+.chip {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.chip:hover {
+  background: var(--wash);
+}
+
+.chip.is-active {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: var(--surface-1);
+}
+
+/* ------------------------------------------------------------ 主数字区 */
+
+.hero-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 22px;
+  margin-bottom: 16px;
+}
+
+/* 三个指标并排一行：区间消耗 / 当前小时 / 活跃项目 */
+.hero-sub {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.sub-item {
+  min-width: 0;
+}
+
+.sub-label {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.sub-value {
+  margin: 6px 0 0;
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  /* 数字绝不能折行 —— 「1,234」断成两截就读不出来了 */
+  white-space: nowrap;
+}
+
+.sub-value.is-lead {
+  font-size: 25px;
+}
+
+.sub-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.sub-note .up {
+  color: var(--status-critical);
+}
+
+.sub-note .down {
+  color: var(--status-good);
+}
+
+/* -------------------------------------------------------------- 指标卡 */
+
+.tiles {
+  display: grid;
+  /* 固定两列，保证「平均」和「最费」永远并排，窄到面板宽度也不会折行 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+}
+
+.tile-label {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.tile-value {
+  margin: 6px 0 0;
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.tile-value .unit {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+
+.tile-sub {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- 卡片 */
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 22px 14px;
+  margin-bottom: 16px;
+}
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.card-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.card-sub {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------- 消耗构成 */
+
+.kind-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 16px;
+}
+
+.kind-item {
+  min-width: 0;
+}
+
+/* 色的图例键在名字左边 —— 身份靠标记承载，文字本身不染分类色 */
+.kind-item .sub-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.kind-key {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--c);
+}
+
+/* 占比条：段与段之间留 2px 表面色缝隙来分隔，不描边 */
+.kind-bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin-top: 16px;
+}
+
+.kind-seg {
+  flex-basis: 0;
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--c);
+}
+
+/* ------------------------------------------------------ 曲线选择器 */
+
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 14px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pick {
+  position: relative; /* 兜住绝对定位的隐藏 checkbox，别让它跑到别处撑出滚动条 */
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-1);
+  font-size: 12.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.pick:hover {
+  background: var(--wash);
+}
+
+/* 选中 = 色点填实 + 文字提到正文对比度。
+   原来一个名片上并排「勾选框 + 色条」两个指示器，冗余又乱；
+   而且那个勾是绝对定位加旋转手画的，稍有偏差就歪。 */
+.pick.is-on {
+  color: var(--text-primary);
+  border-color: var(--baseline);
+}
+
+.pick.is-locked {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pick.is-locked:hover {
+  background: transparent;
+}
+
+/* 真正的 checkbox 只留给键盘和读屏，视觉由色点承担 */
+.pick input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pick:has(input:focus-visible) {
+  outline: 2px solid var(--series-1);
+  outline-offset: 2px;
+}
+
+.pick-key {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid var(--baseline);
+  background: transparent;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.pick.is-on .pick-key {
+  border-color: var(--c);
+  background: var(--c);
+}
+
+/* 「展开其余 N 个」：用虚线和项目名片区分开 —— 它是个动作，不是某个项目 */
+.pick-toggle {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.pick-toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--baseline);
+}
+
+.pick-toggle:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------ 放大浮层 */
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+body.is-modal-open {
+  overflow: hidden;
+}
+
+.chart-modal {
+  position: fixed;
+  inset: 0;
+  /* 要盖过仪表盘里一切：浮层、提示气泡，以及预览页自带的那条横幅（z-index 99） */
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 四周留够余地，卡片别顶到屏幕边上 —— 之前是一路铺满，显得压迫 */
+  padding: 32px 28px;
+  background: rgba(0, 0, 0, 0.46);
+  animation: modal-fade 170ms ease;
+}
+
+.modal-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  /* 宽高都封顶，屏幕再大也只是「一张卡片」，不会跟着一起膨胀 */
+  height: min(700px, 100%);
+  max-width: 1120px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--page);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  animation: modal-pop 200ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@keyframes modal-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 关闭时倒放一遍再真正移除，不要啪一下消失 */
+.chart-modal.is-closing {
+  animation: modal-fade 150ms ease reverse;
+}
+
+.chart-modal.is-closing .modal-card {
+  animation: modal-pop 150ms ease reverse;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-modal,
+  .modal-card,
+  .chart-modal.is-closing,
+  .chart-modal.is-closing .modal-card {
+    animation: none;
+  }
+}
+
+/* 单行标题栏：标题 · 提示 · 关闭 */
+.modal-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 11px 12px 11px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.modal-title {
+  flex: none;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.modal-hint {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.modal-chart {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 14px 14px;
+}
+
+/* 面板里，外层已经把面板放大成一块居中的浮窗了 ——
+   浮层自己就别再画一圈边框和阴影，否则会套成「框中框」。
+   尺寸上限交给面板那层管，这里只负责填满它。 */
+:root.is-embedded .chart-modal {
+  padding: 0;
+  background: transparent;
+}
+
+:root.is-embedded .modal-card {
+  max-width: none;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root.is-embedded .modal-bar {
+  padding: 10px 10px 10px 14px;
+}
+
+/* ---------------------------------------------------------------- 图表 */
+
+.chart-host {
+  position: relative;
+  outline: none;
+}
+
+.chart-host:focus-visible {
+  box-shadow: 0 0 0 2px var(--series-1);
+  border-radius: 8px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 2px 0 10px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+/* 线形色键：图例要和图上的标记形态一致 */
+.legend-key {
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--c);
+  flex: none;
+}
+
+.chart-plot {
+  position: relative;
+  min-height: 120px;
+}
+
+.chart-plot svg {
+  display: block;
+}
+
+.axis-text {
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-empty {
+  margin: 0;
+  padding: 46px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.chart-tip {
+  position: absolute;
+  z-index: 5;
+  min-width: 148px;
+  max-width: 260px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.13);
+  pointer-events: none;
+}
+
+.tip-head {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.tip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1.5px 0;
+}
+
+.tip-key {
+  width: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--c);
+  flex: none;
+}
+
+.tip-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* tooltip 里数值是主角，名称退居次位 */
+.tip-value {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* ---------------------------------------------------------------- 表格 */
+
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 4px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+th,
+td {
+  text-align: right;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+th:first-child,
+td:first-child {
+  text-align: left;
+  position: sticky;
+  left: 0;
+  background: var(--surface-1);
+}
+
+thead th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+tbody td {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+tbody td:first-child {
+  color: var(--text-primary);
+  font-variant-numeric: normal;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+  font-weight: 600;
+  color: var(--text-primary);
+}
