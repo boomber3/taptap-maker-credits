@@ -26,6 +26,25 @@ const MAX_RUN_MS = 4 * 60_000; // 单轮同步的硬上限，超了主动中止�
 const TOKEN_SKEW_MS = 60_000; // 提前 1 分钟就当作要过期
 const MAX_INCREMENTAL_PAGES = 40;
 
+// 第二个数据源：开发者后台的商店数据。它和上面的积分**刻意不同构**，详见下面的分节。
+const DEV_API = 'https://developer.taptap.cn/api';
+const DEV_APPS_TTL_MS = 30 * 60_000; // 应用列表多久算新鲜
+const DEV_STATS_TTL_MS = 5 * 60_000; // 同一份区间数据多久内直接用缓存
+
+/**
+ * 渠道趋势画哪几条。
+ *
+ * 接口是一条渠道一次请求，而全画（安卓有 8 条）必然读不清 —— 折线超过 8 条
+ * 就没有经过校验的可辨色相了。这四条既是后台自己突出的那几个，相加也应当
+ * 等于「全部」，正好能拿来做一致性校验。
+ */
+const DEV_CHANNELS = [
+  { id: 'index_feed', name: '首页推荐' },
+  { id: 'search', name: '搜索' },
+  { id: 'top', name: '排行榜' },
+  { id: 'other', name: '其他' },
+];
+
 /**
  * 聚合数据的版本号。改动入库逻辑、导致已有聚合值不再可信时把它加一，
  * 下次同步会把 daily/hourly 清空重建（代价是一次全量翻页，约半分钟）。
@@ -372,6 +391,251 @@ export async function runSync(reason = 'manual') {
   }
 }
 
+// -------------------------------------------------- 开发者后台「数据表现」
+
+/**
+ * 第二个数据源：TapTap 开发者后台的商店数据。
+ *
+ * **刻意不照搬上面那套积分同步**，因为数据形态根本不同：
+ *   积分要翻一万多条流水、自己聚合、存历史 —— 所以必须有回填、增量、锁、心跳。
+ *   数据表现是「你要哪一段，服务端就给你哪一段」，历史在服务端 ——
+ *   按需拉一次就够了。所以这里没有 alarm、没有 running 锁、没有 lastError 状态机。
+ *
+ * 鉴权是**纯 Cookie**（实测：credentials:'include' → 200，'omit' → 401「未认证」），
+ * 所以不需要内容脚本过户凭证、更不需要续期 —— 只要 host_permissions 里有这个域。
+ */
+
+/** 开发者后台的请求。Cookie 由 host_permissions 带过去，不用自己拼鉴权头。 */
+async function devGet(path) {
+  const res = await request(`${DEV_API}${path}`, { credentials: 'include' });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error('开发者后台未登录 —— 先在浏览器里打开一次 developer.taptap.cn');
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const body = await res.json();
+  if (!body || body.success !== true) {
+    const inner = body && body.data;
+    throw new Error((inner && (inner.msg || inner.error)) || '接口返回失败');
+  }
+  return body.data;
+}
+
+const sumBy = (list, key) => (list || []).reduce((a, x) => a + (Number(x[key]) || 0), 0);
+
+/**
+ * 区间的比率 = **逐日比率求平均**。
+ *
+ * 这条是拿后台页面上的数字反推出来的，三种算法只对上这一种
+ * （2026-08-23~09-21，安卓口径）：
+ *
+ *     逐日求平均        点击率 6.89%   转化率 20.84%   ← 与后台显示**逐位相同**
+ *     求和再相除        点击率 6.95%   转化率 —
+ *     接口的 overview   点击率 6.95%   转化率 20.99%   ← 也对不上
+ *
+ * 所以：**不要**用接口自带的 overview，也**不要**自己拿两个计数相除 ——
+ * 两条路都会和用户在后台看到的数字差一点点，而这种「差一点点」最难解释。
+ * 拿不到某天的比率（接口给的是 '-'）就跳过那天，别当成 0 拉低平均。
+ */
+function avgRate(rows, key) {
+  const vals = (rows || [])
+    .map((r) => parseFloat(String(r[key]).replace('%', '')))
+    .filter((n) => Number.isFinite(n));
+  if (!vals.length) return null;
+  return `${(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2)}%`;
+}
+
+/** 先拿工作室，再逐个拉应用，合并成一份列表。 */
+async function fetchDevApps() {
+  const devs = await devGet('/developer/v1/list');
+  const out = [];
+  for (const d of (devs && devs.list) || []) {
+    const page = await devGet(
+      `/app/v2/list?developer_id=${d.id}&page=1&pagesize=50&sort_by_updated_at=true`,
+    );
+    for (const app of (page && page.list) || []) {
+      out.push({
+        id: app.id,
+        devId: d.id,
+        title: app.title || `应用 ${app.id}`,
+        // 草稿应用的名字会是占位符，界面上要能看出来不是一个真名字
+        icon: (app.icon && (app.icon.medium_url || app.icon.url)) || '',
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 拉一个应用的区间数据：四项指标 + 各渠道逐日曝光。
+ *
+ * 注意不带 platform 时接口**只返回安卓**（实测）。这里是安卓口径，
+ * 界面上要写清楚，免得和后台页面（可能在看 iOS）对不上。
+ */
+async function fetchExposure(appId, devId, start, end) {
+  const q = `developer_id=${devId}&app_id=${appId}&start_date=${start}&end_date=${end}`;
+
+  // 曝光/点击来自 position，浏览来自 pv —— 后台页面上那行 KPI 就是这么拼的，
+  // 四个数分别和后台对得上（见 avgRate 的注释）。两个请求并发，省一半等待。
+  const [pos, pv] = await Promise.all([
+    devGet(`/dashboard/v2/stats-by-day/position/cn?${q}`),
+    devGet(`/dashboard/v3/stats-by-day/pv/cn?${q}`),
+  ]);
+
+  const rows = pos.list || [];
+  const totals = {
+    impression: sumBy(rows, 'impression_cnt'),
+    detail: sumBy(pv.list || [], 'pv_from_total'),
+    clickRate: avgRate(rows, 'click_rate'),
+    convertRate: avgRate(rows, 'convert_detail_rate'),
+  };
+
+  // 以「全部」那份的日期为准，各渠道按日期对齐、缺的补 0 ——
+  // 不对齐的话几条线的 x 轴会错位，看上去就是错的。
+  const dates = rows.map((r) => r.date).sort();
+
+  // 四条渠道**并发**拉。串行的话要等四轮往返，切应用时那种「卡一下」
+  // 主要就是它 —— 每次多等几百毫秒，一次切换就多出一两秒。
+  const ones = await Promise.all(
+    DEV_CHANNELS.map((ch) => devGet(`/dashboard/v2/stats-by-day/position/cn?${q}&position=${ch.id}`)),
+  );
+  const channels = DEV_CHANNELS.map((ch, i) => {
+    const byDate = new Map(
+      ((ones[i] && ones[i].list) || []).map((r) => [r.date, Number(r.impression_cnt) || 0]),
+    );
+    return { id: ch.id, name: ch.name, values: dates.map((d) => byDate.get(d) || 0) };
+  });
+
+  return { totals, dates, channels };
+}
+
+/**
+ * 广告收益：逐日预估收益（元）。
+ *
+ * 参数名和上面那套**不一样** —— 这里是 start_time / end_time，不是 start_date /
+ * end_date。抄错了接口直接报错，别想当然。
+ */
+async function fetchAd(appId, devId, start, end) {
+  const q = `developer_id=${devId}&app_id=${appId}&start_time=${start}&end_time=${end}`;
+  const d = await devGet(`/mini-app/v1/ad/payout-report-data?${q}`);
+
+  const rows = (d && d.list) || [];
+  const byDate = new Map(rows.map((r) => [r.date, r.revenue]));
+
+  // 接口对**还没结算的那天**（今天）返回的是 `revenue: ""` —— 空字符串，不是 "0"。
+  // 这两者必须分开：0 是「那天真的没赚到」，空是「还没出」。
+  // 写成 `Number(r.revenue) || 0` 的话空字符串会变成 0，今天点开就永远是 ¥0.00，
+  // 看着像没收入 —— 而这个区别在别处（拉取失败 vs 显示 0）也是同一条原则。
+  //
+  // 图表**只画已经出了的天**：把没出的那天补成 0，图尾会出现一段假的暴跌，
+  // 和积分那边「只画到当前小时」是同一个理由。
+  const dated = rows
+    .filter((r) => r.revenue !== '' && r.revenue != null && Number.isFinite(Number(r.revenue)))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  const dates = dated.map((r) => r.date);
+  const values = dated.map((r) => Number(r.revenue));
+  const total = round2(values.reduce((a, b) => a + b, 0));
+
+  return {
+    dates,
+    values,
+    total,
+    pendingDays: rows.length - dated.length, // 尾部有几天还没出
+    // 日均按**有数据的天数**算 —— 已经结算的那些天里，收益为 0 的那天照样算进去
+    // （那是真实的 0），但「还没出」的那天不能算（拿它当 0 会把日均拉低）。
+    perDay: dates.length ? round2(total / dates.length) : null,
+  };
+}
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+/**
+ * 曝光那一套：四项指标 + 各渠道逐日曝光。
+ *
+ * 广告收益**不在这里**。它已经独立成一个面板，有自己的区间（昨天/近7天/…），
+ * 和这里的区间不再是同一段 —— 捆在一起的话，用户在广告页切区间会把曝光
+ * 也一起重取，反之亦然。各走各的消息和存储键。
+ */
+async function fetchDevStats(appId, devId, start, end) {
+  return fetchExposure(appId, devId, start, end);
+}
+
+/** 应用列表。拉不到时保留上一次的好数据，只记错误 —— 别把能用的清单冲掉。 */
+async function refreshDevApps({ force = false } = {}) {
+  const { devApps: cached } = await chrome.storage.local.get('devApps');
+  const fresh =
+    cached && (cached.list || []).length && Date.now() - (cached.at || 0) < DEV_APPS_TTL_MS;
+  if (!force && fresh) return { ok: true, cached: true };
+
+  try {
+    const list = await fetchDevApps();
+    await chrome.storage.local.set({ devApps: { at: Date.now(), list, error: null } });
+    return { ok: true, count: list.length };
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    await chrome.storage.local.set({
+      devApps: { at: Date.now(), list: (cached && cached.list) || [], error: message },
+    });
+    return { ok: false, message };
+  }
+}
+
+/** 区间数据。失败时清掉数据只留错误 —— 宁可显示「拉取失败」，也不能显示成 0。 */
+export async function refreshDevStats({ appId, devId, start, end, force = false }) {
+  if (!appId || !devId || !start || !end) return { ok: false, message: '参数不完整' };
+
+  try {
+    // force=true 必须真的绕过缓存。界面一直有传这个参数，但这里早先没接 ——
+    // 于是「强制刷新」是个空承诺：5 分钟内怎么点都还是那份旧数据。
+    const { devStats: cached } = await chrome.storage.local.get('devStats');
+    const same = cached && cached.appId === appId && cached.start === start && cached.end === end;
+    if (!force && same && !cached.error && Date.now() - (cached.at || 0) < DEV_STATS_TTL_MS) {
+      return { ok: true, cached: true };
+    }
+    const data = await fetchDevStats(appId, devId, start, end);
+    await chrome.storage.local.set({
+      devStats: { at: Date.now(), appId, devId, start, end, error: null, ...data },
+    });
+    return { ok: true };
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    await chrome.storage.local.set({
+      devStats: { at: Date.now(), appId, devId, start, end, error: message },
+    });
+    return { ok: false, message };
+  }
+}
+
+/**
+ * 广告收益。和上面结构一样，但**独立的一份**：自己的存储键、自己的区间。
+ *
+ * 它是 T+1 的（今天必然为空），所以界面上给的区间是昨天/近7天/近30天/近90天，
+ * 和曝光那套的区间不是同一段 —— 这也是它必须单独一条的原因。
+ */
+export async function refreshAdStats({ appId, devId, start, end, force = false }) {
+  if (!appId || !devId || !start || !end) return { ok: false, message: '参数不完整' };
+
+  try {
+    const { adStats: cached } = await chrome.storage.local.get('adStats');
+    const same = cached && cached.appId === appId && cached.start === start && cached.end === end;
+    if (!force && same && !cached.error && Date.now() - (cached.at || 0) < DEV_STATS_TTL_MS) {
+      return { ok: true, cached: true };
+    }
+    const data = await fetchAd(appId, devId, start, end);
+    await chrome.storage.local.set({
+      adStats: { at: Date.now(), appId, devId, start, end, error: null, ...data },
+    });
+    return { ok: true };
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    await chrome.storage.local.set({
+      adStats: { at: Date.now(), appId, devId, start, end, error: message },
+    });
+    return { ok: false, message };
+  }
+}
+
 // ------------------------------------------------------------------ 摘要
 
 /**
@@ -425,6 +689,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'sync-now') {
     runSync('manual').then(sendResponse);
     return true; // 异步回复
+  }
+
+  // 开发者后台那两个。都返回 { ok, message? }，界面照 message 显示，
+  // 不自己编「拉取失败」之外的措辞。
+  // 这两个都必须**保证**回包。只写 .then(sendResponse) 的话，一旦函数抛异常
+  // （比如开头那句 storage.get 失败），sendResponse 永远不被调用 ——
+  // 消息端口就一直开着，前台的 await 永不返回，那边界面会永远停在「加载中」。
+  if (msg.type === 'dev-apps') {
+    refreshDevApps({ force: Boolean(msg.force) })
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: String((err && err.message) || err) }));
+    return true;
+  }
+
+  if (msg.type === 'dev-stats') {
+    refreshDevStats(msg)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: String((err && err.message) || err) }));
+    return true;
+  }
+
+  if (msg.type === 'ad-stats') {
+    refreshAdStats(msg)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: String((err && err.message) || err) }));
+    return true;
   }
 
   return false;

@@ -1,11 +1,14 @@
 {
   "manifest_version": 3,
   "name": "TapTap 制造 · 积分消耗统计",
-  "version": "1.10.3",
+  "version": "1.16.0",
   "description": "统计 TapTap 制造账号的积分消耗：按小时、按天、按项目生成折线图。数据取自官方接口，只保存在本机。",
   "minimum_chrome_version": "110",
   "permissions": ["storage", "alarms"],
-  "host_permissions": ["https://maker.taptap.cn/*"],
+  "host_permissions": [
+    "https://maker.taptap.cn/*",
+    "https://developer.taptap.cn/*"
+  ],
   "background": {
     "service_worker": "src/background.js",
     "type": "module"

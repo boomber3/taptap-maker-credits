@@ -40,6 +40,7 @@ const IS_OVERLAY = PAGE_PARAMS.has('overlay');
 
 const RANGE_LABEL = {
   today: '今日消耗',
+  yesterday: '昨日收益', // 只在广告收益那页出现
   7: '近 7 天消耗',
   30: '近 30 天消耗',
   90: '近 90 天消耗',
@@ -48,6 +49,13 @@ const RANGE_LABEL = {
 
 const state = {
   data: null,
+  tab: 'credits', // 'credits' | 'data'
+  // 开发者后台那一路。和上面那份完全独立，各存各的键。
+  devApps: null,
+  devAppsError: null,
+  devPick: null,
+  devStats: null,
+  adStats: null, // 广告收益 —— 独立的一份，区间和上面那页不是同一套
   range: 'today',
   selected: null, // 项目对比里勾选了哪些项目（跟随时间范围重算）
   selectionRange: null, // 当前这套勾选是按哪个时间范围算出来的
@@ -97,6 +105,13 @@ function listenHostMessages() {
     if (data.type === 'ttm-open' && IS_OVERLAY && !modalState.config) {
       openFromState(data.chart || 'trend');
     }
+
+    // 嵌在面板里时，视图切换在面板顶栏上（那边是 Shadow DOM，改不了这里），
+    // 它按下的档位从这里切。独立标签页没有顶栏，用的是页面自己那排标签。
+    if (data.type === 'ttm-tab') {
+      switchTab(data.tab);
+      if (data.tab !== 'credits') loadDevApps().then(() => refreshActiveView());
+    }
   });
 }
 
@@ -123,7 +138,32 @@ async function load() {
     'kindDaily',
     'kindHourly',
     'activeProjectIds',
+    // 开发者后台那一路
+    'devApps',
+    'devPick',
+    'devStats',
+    'adStats',
   ]);
+  state.devApps = (raw.devApps && raw.devApps.list) || null;
+  state.devAppsError = (raw.devApps && raw.devApps.error) || null;
+  state.devPick = raw.devPick || null;
+
+  // 存储里那份数据必须是**当前选中的应用**的。换了应用还没拉回来时，
+  // 存储里躺着的仍是上一个应用的数字 —— 直接拿来显示就等于张冠李戴。
+  // 这里当场判掉，界面会退回空态去等新数据。
+  const wantApp = (raw.devApps && raw.devApps.list || []).find(
+    (a) => String(a.id) === String(raw.devPick),
+  ) || (raw.devApps && raw.devApps.list || [])[0];
+  const st = raw.devStats || null;
+  state.devStats = st && wantApp && String(st.appId) === String(wantApp.id) ? st : null;
+  // 等的那份到货了就撤掉加载态（成功和失败都算到货）。
+  // 第三个参数是「真的进 state 了没」—— 存储里有一份但被上面那个守卫挡掉的话，
+  // 收工就只剩一根横线。
+  settleDev('dev', st, state.devStats !== null);
+
+  const ad = raw.adStats || null;
+  state.adStats = ad && wantApp && String(ad.appId) === String(wantApp.id) ? ad : null;
+  settleDev('ad', ad, state.adStats !== null);
   state.data = {
     auth: raw.auth || null,
     sync: raw.sync || {},
@@ -752,6 +792,18 @@ function render() {
 
   renderStatus();
   renderNotice();
+
+  // 隐藏的那些面板整个跳过。
+  // 这不只是省事：另外两页每拉一次都会写存储，存储一变就走到这里 ——
+  // 要是不管可见性照画不误，用户在数据页每点一次应用，都会在背后
+  // 把积分页的三张图和表格重画一遍。那正是「切什么都不跟手」的来源。
+  // （各自还会再判一次自己的 hidden，这里是省掉最贵的那段。）
+  if ($('pane-credits').hidden) {
+    renderDev();
+    renderAd();
+    return;
+  }
+
   const syncing = isSyncing(state.data.sync);
   $('sync-btn').disabled = syncing;
   $('sync-btn').classList.toggle('is-spinning', syncing);
@@ -848,6 +900,11 @@ function render() {
 
   if (!$('table-wrap').hidden) renderTable(view, projects);
   $('table-wrap').__last = { view, projects };
+
+  // 另外两页跟着一起重画：存储变化（比如刚拉回来一份）也得反映过去，
+  // 而它们自己在面板隐藏时是空转的。
+  renderDev();
+  renderAd();
 }
 
 // -------------------------------------------------------------- 放大查看
@@ -1017,7 +1074,726 @@ function drawModal() {
   });
 }
 
+// -------------------------------------------------------------- 数据表现
+
+/**
+ * 第二个数据源：TapTap 开发者后台的商店数据。
+ *
+ * 界面上只有两条原则，都是因为它和积分是**两回事**：
+ *   1. 它是另一个站点的另一套数据，和积分没有换算关系 —— 所以单独一页、不混排，
+ *      页脚写明来源，免得被当成同一份账。
+ *   2. 接口按「从哪天到哪天」取，没有「全部」的概念 —— 区间要换算成日期，
+ *      「全部」得给个上限。
+ */
+/**
+ * 区间 → 天数。
+ *
+ * **没有「全部」，而且 90 是上限**：曝光里那个「商店页浏览数」来自 pv 接口，
+ * 它硬限制「查询日期跨度不能超过 90 天」—— 实测 365 天直接返回 400。
+ * 而曝光和浏览是 `Promise.all` 一起取的，pv 一挂整个曝光就全空了，
+ * 界面上表现为四项全变「—」。position 那个接口本身没有这个限制，
+ * 但两个指标是一张卡里的，只能一起守 90 天。
+ */
+const DEV_RANGES = { today: 1, 7: 7, 30: 30, 90: 90 };
+
+/**
+ * 广告收益的区间：**没有「今天」，改成「昨天」**。
+ *
+ * 它是 T+1 的 —— 接口会返回今天这一行，但金额是空字符串（还没结算）。
+ * 与其让「今天」永远是一档空态，不如直接给一档「昨天」，
+ * 每一档都是已结算的完整日。
+ */
+const AD_RANGES = { yesterday: 1, 7: 7, 30: 30, 90: 90 };
+
+/** 每个面板各自的区间选项。页首那个控件跟着当前面板换。 */
+const RANGE_SETS = {
+  credits: ['today', '7', '30', '90', 'all'],
+  data: ['today', '7', '30', '90'],
+  ad: ['yesterday', '7', '30', '90'],
+};
+
+/** 区间 → [起, 止]，都是 YYYY-MM-DD。广告那页的终点是**昨天**。 */
+function devDateRange(range, { ad = false } = {}) {
+  const days = (ad ? AD_RANGES : DEV_RANGES)[range] || 7;
+  const end = new Date();
+  if (ad) end.setDate(end.getDate() - 1); // T+1：最近一个已结算的完整日是昨天
+  const start = new Date(end);
+  start.setDate(start.getDate() - (days - 1));
+  return [dayKey(start), dayKey(end)];
+}
+
+/** 选中的是哪个应用。没选过就默认第一个，别让界面空着。 */
+function currentDevApp() {
+  const apps = state.devApps || [];
+  if (!apps.length) return null;
+  return apps.find((a) => String(a.id) === String(state.devPick)) || apps[0];
+}
+
+/**
+ * 应用选择器。
+ *
+ * 做成构造器是因为现在有**两个**面板（数据表现、广告收益）各需要一个。
+ * 复制一百多行不如参数化一次 —— 而且这里面的键盘、焦点、收起时机都是
+ * 踩过坑才写对的（比如 mousedown 必须 preventDefault，见下面），
+ * 复制一份等于把那些坑也复制一份。
+ *
+ * 两个实例**共享选中的那个应用**（state.devPick），只是各自的展开状态
+ * 互不相干 —— 在广告页开着下拉，切到数据页不该看到它也是开的。
+ */
+function makeAppPicker(ids) {
+  let key = null; // 上一次画的是哪份清单
+  let open = false;
+  let active = -1; // 键盘高亮到第几项，和「已选中」是两回事
+
+  const trigger = $(ids.trigger);
+  const menu = $(ids.menu);
+  const nameEl = $(ids.name);
+  const iconEl = ids.icon ? $(ids.icon) : null;
+
+  function buildOption(app, i) {
+    const opt = document.createElement('div');
+    opt.className = 'dev-option';
+    opt.setAttribute('role', 'option');
+    opt.setAttribute('aria-selected', 'false');
+    opt.id = `${ids.menu}-opt-${i}`; // aria-activedescendant 要指向它
+
+    if (app.icon) {
+      const img = document.createElement('img');
+      img.className = 'dev-icon';
+      img.src = app.icon;
+      img.alt = '';
+      opt.append(img);
+    }
+
+    const name = document.createElement('span');
+    name.className = 'dev-option-name';
+    name.textContent = app.title;
+    opt.append(name);
+
+    // 按下的瞬间别让焦点跑掉。选项是 <div>，真实点击时浏览器会把焦点移到
+    // body（不可聚焦的地方），于是收到 focusout —— 而它发生在 click **之前**，
+    // 弹层会先被收起来，click 就落在空气上：表现就是「点了一下什么也没发生」。
+    // 阻止 mousedown 的默认行为即可保住焦点，click 照常触发。
+    opt.addEventListener('mousedown', (ev) => ev.preventDefault());
+    opt.addEventListener('click', () => {
+      pickDevApp(app);
+      closeMenu();
+      trigger.focus();
+    });
+    return opt;
+  }
+
+  /** 只挪高亮，不改变选中 —— 方向键浏览时不能顺手把应用切了。 */
+  function paintActive() {
+    const items = [...menu.children];
+    for (const [i, el] of items.entries()) el.classList.toggle('is-active', i === active);
+    const el = items[active];
+    if (el) {
+      // 面板里只有七百来高，列表比它长，高亮跑出视野就得跟过去
+      el.scrollIntoView({ block: 'nearest' });
+      trigger.setAttribute('aria-activedescendant', el.id);
+    }
+  }
+
+  function openMenu() {
+    if (!(state.devApps || []).length || open) return;
+    open = true;
+    active = Math.max(0, (state.devApps || []).findIndex((a) => String(a.id) === String(state.devPick)));
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    paintActive();
+  }
+
+  function closeMenu() {
+    if (!open) return;
+    open = false;
+    active = -1;
+    menu.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+  }
+
+  function move(delta) {
+    const n = menu.children.length;
+    if (!n) return;
+    active = (active + delta + n) % n;
+    paintActive();
+  }
+
+  function render() {
+    const apps = state.devApps || [];
+    const listKey = apps.map((a) => a.id).join(',');
+
+    // 初值必须是「不可能等于任何真实清单」的东西（null）。写 '' 的话，
+    // 应用列表为空时 key 也是 ''，两者相等 → 空态那一支永远不执行，弹层一片空白。
+    //
+    // 只在清单真变了时才重建：每次重画都重建会把键盘高亮和滚动位置弄丢，
+    // 而这个渲染会因为存储变化被反复触发。
+    if (listKey !== key) {
+      key = listKey;
+      menu.textContent = '';
+      if (!apps.length) {
+        const empty = document.createElement('div');
+        empty.className = 'dev-option';
+        empty.textContent = state.devAppsError ? '应用列表没拉到' : '还没拿到应用列表';
+        menu.append(empty);
+      } else {
+        apps.forEach((a, i) => menu.append(buildOption(a, i)));
+      }
+    }
+
+    const pick = currentDevApp();
+    nameEl.textContent = pick ? pick.title : '还没拿到应用列表';
+    trigger.disabled = !apps.length;
+
+    if (iconEl) {
+      if (pick && pick.icon) {
+        iconEl.src = pick.icon;
+        iconEl.hidden = false;
+      } else {
+        iconEl.hidden = true;
+        iconEl.removeAttribute('src');
+      }
+    }
+
+    // 已选中的那一项打个点（样式挂在 aria-selected 上）
+    for (const [i, a] of apps.entries()) {
+      const el = menu.children[i];
+      if (el) el.setAttribute('aria-selected', String(String(a.id) === String(pick && pick.id)));
+    }
+  }
+
+  trigger.addEventListener('click', () => {
+    if (open) closeMenu();
+    else openMenu();
+  });
+
+  // 方向键 / Enter / Esc。原生 <select> 这些是白送的，自绘就得自己实现 ——
+  // 少一个，键盘用户就被挡在门外了。
+  trigger.addEventListener('keydown', (ev) => {
+    const n = menu.children.length;
+    if (!n) return;
+
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (!open) {
+        openMenu();
+        return;
+      }
+      move(ev.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (ev.key === 'Home' || ev.key === 'End') {
+      if (!open) return;
+      ev.preventDefault();
+      active = ev.key === 'Home' ? 0 : n - 1;
+      paintActive();
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      if (!open) return; // 没开时交给 click，别抢
+      ev.preventDefault();
+      const app = (state.devApps || [])[active];
+      if (app) {
+        pickDevApp(app);
+        closeMenu();
+      }
+      return;
+    }
+    if (ev.key === 'Escape' && open) {
+      ev.preventDefault();
+      closeMenu();
+    }
+  });
+
+  // 点别处收起。用捕获阶段：别处的控件也会 stopPropagation，
+  // 挂在冒泡上会漏掉那些点击，弹层就一直开着。
+  document.addEventListener(
+    'pointerdown',
+    (ev) => {
+      if (!open) return;
+      if (!$(ids.picker).contains(ev.target)) closeMenu();
+    },
+    true,
+  );
+
+  // Tab 走了也得收起来，否则弹层会孤零零挂在屏幕上。
+  //
+  // 但焦点落到「不可聚焦的地方」时**不能收**：relatedTarget 为 null 正是
+  // 点空白、点选项这类情况，此时收弹层会赶在 click 之前把选项弄没。
+  // 点到选择器外面那种情况由上面那个 pointerdown 兜着，不会漏。
+  $(ids.picker).addEventListener('focusout', (ev) => {
+    if (!open) return;
+    const next = ev.relatedTarget;
+    if (!next || next === document.body) return;
+    if (!$(ids.picker).contains(next)) closeMenu();
+  });
+
+  return { render, close: closeMenu };
+}
+
+const dataPicker = makeAppPicker({
+  picker: 'dev-picker',
+  trigger: 'dev-trigger',
+  name: 'dev-trigger-name',
+  icon: 'dev-icon',
+  menu: 'dev-menu',
+});
+
+const adPicker = makeAppPicker({
+  picker: 'ad-picker',
+  trigger: 'ad-trigger',
+  name: 'ad-trigger-name',
+  icon: null,
+  menu: 'ad-menu',
+});
+
+/** 换了应用：两块数据的缓存键都不再匹配，所以**当前这一页**立刻重取，
+ *  另一页等切过去时自然会发现缓存对不上而重取。 */
+function pickDevApp(app) {
+  if (String(state.devPick) === String(app.id)) return;
+  state.devPick = app.id;
+  chrome.storage.local.set({ devPick: app.id }).catch(() => {});
+  refreshActiveView();
+}
+
+function renderDevNotice() {
+  const el = $('dev-notice');
+  // 当前这屏的数据拉失败优先于列表失败 —— 前者是用户此刻正要看的东西
+  const msg = (state.devStats && state.devStats.error) || state.devAppsError || '';
+  el.hidden = !msg;
+  el.classList.toggle('is-error', Boolean(msg));
+  el.textContent = msg ? `数据没能拉下来：${msg}` : '';
+}
+
+function renderDevTiles() {
+  const host = $('dev-tiles');
+  host.textContent = '';
+
+  const busy = devIsBusy('dev');
+
+  // 拉失败时 totals 是缺的 —— 这里必须显示成「—」，绝不能显示成 0。
+  // 0 和「没拉到」是两件完全不同的事，混在一起就再也分不清了。
+  const t = (state.devStats && !state.devStats.error && state.devStats.totals) || null;
+  const num = (v) => (v == null ? '—' : formatExact(v));
+
+  const tiles = [
+    { label: '游戏曝光数', value: num(t && t.impression), sub: '安卓 · 商店各位置曝光合计' },
+    { label: '商店页浏览数', value: num(t && t.detail), sub: '进到商店页的次数' },
+    { label: '商店页点击率', value: (t && t.clickRate) || '—', sub: '逐日点击率的区间平均' },
+    { label: '商店页转化率', value: (t && t.convertRate) || '—', sub: '逐日转化率的区间平均' },
+  ];
+
+  for (const tile of tiles) {
+    const card = document.createElement('div');
+    card.className = 'tile';
+
+    const label = document.createElement('p');
+    label.className = 'tile-label';
+    label.textContent = tile.label;
+
+    const value = document.createElement('p');
+    value.className = 'tile-value';
+
+    // 取数中就地把数字换成转圈图标，位置就在它本来该出现的地方 ——
+    // 这样视线不用挪，也不会出现「数字先空着、过一会儿才冒出来」的突兀感。
+    if (busy) {
+      const spin = document.createElement('span');
+      spin.className = 'tile-spin';
+      spin.setAttribute('role', 'status');
+      spin.setAttribute('aria-label', '加载中');
+      value.append(spin);
+    } else {
+      value.textContent = tile.value;
+    }
+
+    const sub = document.createElement('p');
+    sub.className = 'tile-sub';
+    sub.textContent = tile.sub;
+
+    card.append(label, value, sub);
+    host.append(card);
+  }
+}
+
+function renderDevChart() {
+  const s = state.devStats;
+  const channels = (s && !s.error && s.channels) || [];
+  const dates = (s && s.dates) || [];
+
+  $('dev-chart-sub').textContent = dates.length
+    ? `${formatDayLabel(dates[0])} ~ ${formatDayLabel(dates[dates.length - 1])} · 安卓`
+    : '';
+
+  const xLabels = dates.map((d) => {
+    const [, m, dd] = d.split('-');
+    return `${Number(m)}/${Number(dd)}`;
+  });
+
+  // 颜色按渠道顺序连续取槽 —— 规范要求折线不得跳号，跳着取会得到
+  // 一对没有被验证过的颜色。四条线，正好用前四个槽。
+  const series = channels.map((c, i) => ({
+    id: c.id,
+    name: c.name,
+    color: `var(${SERIES_VARS[i]})`,
+    values: c.values,
+  }));
+
+  renderLineChart($('dev-chart'), {
+    series,
+    xLabels,
+    xFull: dates.map((d) => `${formatDayLabel(d)}（安卓）`),
+    height: 250,
+    ariaLabel: '各渠道曝光趋势',
+    // 取数中优先说「在取」—— 这时候空态不是「没数据」，只是还没到
+    emptyText: devIsBusy('dev')
+      ? '正在取数据…'
+      : dates.length === 1
+        // 曝光是慢变量，只看一天基本看不出东西（而且只有一个点，连不成线）。
+        // 与其画一个孤零零的点，不如直接告诉用户该切到哪一档。
+        ? '「今天」只有一天，看不出趋势 —— 切到「近 30 天」试试'
+        : '选好应用后，这里会画各渠道的曝光趋势',
+  });
+}
+
+/**
+ * 还在等数据吗。
+ *
+ * 刻意由「等的这份数据到没到」来判，而不是由一个「发出去了 / 回来了」的标志位。
+ * 标志位要靠消息通道回包来清；后台一旦被杀、或者处理器抛异常没回包，
+ * 它就再也清不掉了 —— 界面上就是「数据早就出来了，加载中还挂着」。
+ * 这里只问一句「我要的那份数据到了没」，消息回不回来都不影响。
+ *
+ * 兜底：等超过这个时长就当作不会来了，别无限转圈。
+ */
+const DEV_WANT_TIMEOUT_MS = 20_000;
+
+/**
+ * 两块数据各有各的「在等什么」—— 曝光和广告已经是两个面板、两套区间了，
+ * 共用一份的话，在广告页切区间会把曝光那页的加载态也点着。
+ */
+const wants = {
+  dev: { appId: null, since: 0 },
+  ad: { appId: null, since: 0 },
+};
+
+function devIsBusy(kind) {
+  const w = wants[kind];
+  if (!w.appId) return false;
+  return Date.now() - w.since < DEV_WANT_TIMEOUT_MS;
+}
+
+/** 记下「我要的是哪一份」。数据和它一对上就不再是加载中。 */
+function wantDev(kind, appId) {
+  wants[kind] = { appId: String(appId), since: Date.now() };
+}
+
+/**
+ * 数据到了（成功或失败都算到货）就收工。
+ *
+ * 判据是「**为这个应用**拉的」且「**在我发问之后**落盘的」，不去比对日期区间 ——
+ * 早先比的是 (appId, start, end) 三元组，只要后台把区间规范化成别的写法
+ * （或者压根没打算按我给的日期回），就永远对不上，加载态一直挂着。
+ * 把「撤销加载态」押在一次精确匹配上本身就是错的。
+ *
+ * @param landed 这份数据是不是**真的进了 state**（能被画出来）。存储里有一份
+ *   但被别的守卫挡在门外（比如应用列表还没加载、认不出它是谁的）不算到货 ——
+ *   那时候收工，屏幕上就只剩一根横线。
+ */
+function settleDev(kind, stats, landed) {
+  const w = wants[kind];
+  if (!w.appId || !stats || !landed) return;
+  if (String(stats.appId) === w.appId && (stats.at || 0) >= w.since) {
+    wants[kind] = { appId: null, since: 0 };
+  }
+}
+
+/** 金额一律两位小数加 ¥ —— 「元」这个单位在界面上出现一次就够了，数字本身带符号更好扫读。 */
+function money(v) {
+  return `¥${(Math.round(v * 100) / 100).toFixed(2)}`;
+}
+
+/** 广告收益面板。它读的是独立的一份 state.adStats，不是曝光那份。 */
+function renderAd() {
+  if ($('pane-ad').hidden) return; // 没显示就别算
+  const s = state.adStats;
+  const busy = devIsBusy('ad');
+  const err = (s && s.error) || null;
+  // 有数据 = 有已结算的天。收益为 0 的已结算日照样算数，只是「还没出」的不算
+  const has = Boolean(s && s.dates && s.dates.length);
+
+  $('pane-ad').classList.toggle('is-busy', busy);
+  adPicker.render();
+
+  const notice = $('ad-notice');
+  notice.hidden = !err;
+  notice.classList.toggle('is-error', Boolean(err));
+  notice.textContent = err ? `数据没能拉下来：${err}` : '';
+
+  const sub = $('ad-sub');
+  sub.textContent = has
+    ? `${formatDayLabel(s.dates[0])} ~ ${formatDayLabel(s.dates[s.dates.length - 1])} · 单位：元`
+    : '';
+
+  const host = $('ad-tiles');
+  host.textContent = '';
+
+  const tiles = [
+    {
+      label: '预估收益',
+      value: has ? money(s.total) : '—',
+      // 「预估」这两个字必须留着：那个数不是到账，拿它去对银行卡会对不上
+      sub: '后台标注为预估，每月 28 日更新上月',
+    },
+    {
+      label: '日均收益',
+      value: has && s.perDay != null ? money(s.perDay) : '—',
+      // 分母是**已结算的天数**：收益为 0 的已结算日照样算进去（那是真实的 0），
+      // 「还没出」的那天不算（拿它当 0 会把日均拉低）
+      sub: has ? `按已结算的 ${s.dates.length} 天平均` : '区间内还没有已结算的数据',
+    },
+  ];
+
+  for (const t of tiles) {
+    const card = document.createElement('div');
+    card.className = 'tile';
+
+    const label = document.createElement('p');
+    label.className = 'tile-label';
+    label.textContent = t.label;
+
+    const value = document.createElement('p');
+    value.className = 'tile-value';
+    if (busy) {
+      const spin = document.createElement('span');
+      spin.className = 'tile-spin';
+      spin.setAttribute('role', 'status');
+      spin.setAttribute('aria-label', '加载中');
+      value.append(spin);
+    } else {
+      value.textContent = t.value;
+    }
+
+    const subEl = document.createElement('p');
+    subEl.className = 'tile-sub';
+    subEl.textContent = t.sub;
+
+    card.append(label, value, subEl);
+    host.append(card);
+  }
+
+  const dates = (s && s.dates) || [];
+  renderLineChart($('ad-chart'), {
+    series: has
+      ? [{ id: 'revenue', name: '预估收益', color: `var(${SERIES_VARS[0]})`, values: s.values }]
+      : [],
+    xLabels: dates.map((d) => {
+      const [, m, dd] = d.split('-');
+      return `${Number(m)}/${Number(dd)}`;
+    }),
+    xFull: dates.map((d) => formatDayLabel(d)),
+    height: 220,
+    ariaLabel: '每日预估收益',
+    emptyText: err
+      ? '广告收益暂时取不到'
+      : busy
+        ? '正在取数据…'
+        : dates.length === 0
+          // 这一档已经排除了「今天」（区间终点就是昨天），所以走到这里通常是
+          // 这个应用还没开通广告、或者这段时间真的没有收益
+          ? '这段时间还没有已结算的收益'
+          : '这个应用还没有广告收益数据',
+  });
+}
+
+function renderDev() {
+  if ($('pane-data').hidden) return; // 没显示就别算
+  $('pane-data').classList.toggle('is-busy', devIsBusy('dev'));
+  dataPicker.render();
+  renderDevNotice();
+  renderDevTiles();
+  renderDevChart();
+}
+
+/**
+ * 去后台拉一次当前「应用 + 区间」的数据。
+ *
+ * 取数期间必须让界面**明说自己正在取**：这里的请求要几百毫秒，那段时间
+ * 屏幕上还是上一次的结果 —— 切了应用却看到旧应用的数字，还以为是新的。
+ * 所以进入时压暗内容 + 转圈，拿到结果再还原。
+ */
+async function refreshDev({ force = false } = {}) {
+  const app = currentDevApp();
+  if (!app) return;
+  const [start, end] = devDateRange(state.range);
+
+  // 手上这份如果不是「当前应用 + 当前区间」的，当场丢掉。
+  // 它属于另一次查询（比如上一个应用、或上一段时间），留着的话，在等新数据
+  // 这段时间里它会冒充新数据画出来 —— 用户看到的就是「切过去先闪一下旧数字」。
+  // 同参数的手动刷新则保留，那种情况下压暗着看旧数字反而更好。
+  const cur = state.devStats;
+  if (!cur || String(cur.appId) !== String(app.id) || cur.start !== start || cur.end !== end) {
+    state.devStats = null;
+  }
+
+  // 先声明「我要的是哪一份」，再重画 —— 顺序反了这一帧就还是旧的
+  wantDev('dev', app.id);
+  renderDev();
+
+  let res = null;
+  try {
+    res = await chrome.runtime.sendMessage({
+      type: 'dev-stats',
+      appId: app.id,
+      devId: app.devId,
+      start,
+      end,
+      force,
+    });
+  } catch {
+    // 后台可能在重启。拉不到会体现在 devStats.error 上，不用在这儿再报一次。
+  }
+
+  if (res && res.ok) {
+    // 后台说「这份数据在我这儿了」。但**此刻还不能收工** ——
+    // 它可能刚写进存储（界面这边读存储还压在 onChanged 的 250ms 防抖里），
+    // 也可能命中的是缓存（压根不写存储，onChanged 永远不来）。
+    // 无论哪种，直接去读一次：数据进到 state 里，settleDev 才会清掉等待标记，
+    // 于是「转圈停」和「数字出现」落在同一帧。
+    //
+    // 早先是收到 ok 就清标记的，结果中间空出小半秒，显示成一根横线
+    // —— 转圈停了、数字还没来。
+    await load();
+  }
+
+  renderDev();
+}
+
+/**
+ * 广告收益那一页的取数。结构照抄上面那个 —— 但它是**独立的一份**：
+ * 自己的区间（终点是昨天）、自己的存储键、自己的加载态。
+ *
+ * 不合并成一次请求，是因为两页的区间不再是同一段：用户在广告页切区间，
+ * 不该把曝光那页也重取一遍（反过来也一样）。
+ */
+async function refreshAd({ force = false } = {}) {
+  const app = currentDevApp();
+  if (!app) return;
+  const [start, end] = devDateRange(state.range, { ad: true });
+
+  // 同上的道理：手上这份不属于当前「应用 + 区间」就当场丢掉，别让它冒充新数据
+  const cur = state.adStats;
+  if (!cur || String(cur.appId) !== String(app.id) || cur.start !== start || cur.end !== end) {
+    state.adStats = null;
+  }
+
+  wantDev('ad', app.id);
+  renderAd();
+
+  let res = null;
+  try {
+    res = await chrome.runtime.sendMessage({
+      type: 'ad-stats',
+      appId: app.id,
+      devId: app.devId,
+      start,
+      end,
+      force,
+    });
+  } catch {
+    // 后台可能在重启。拉不到会体现在 adStats.error 上。
+  }
+
+  // 后台回了 ok 还得**自己去读一次存储**才收工 —— 存储变化到界面之间压着
+  // 250ms 防抖，也可能命中的是缓存（压根不写存储）。详见 refreshDev 的注释。
+  if (res && res.ok) await load();
+
+  renderAd();
+}
+
+// ------------------------------------------------------------------ 标签页
+
+const TABS = ['credits', 'data', 'ad'];
+
+/**
+ * 区间按钮跟着标签页变：数据表现那页没有「全部」。
+ *
+ * 区间是**两个标签页共用**的一个控件，所以从积分页带着「全部」切过来时，
+ * 必须就地落到「近 90 天」—— 否则会拿着一个数据源根本不接受的区间去请求。
+ * 这里会真的把那个按钮的选中态也挪过去，用户看得见发生了什么。
+ */
+function syncRangeChips() {
+  const allowed = RANGE_SETS[state.tab];
+
+  for (const chip of $('filters').querySelectorAll('.chip')) {
+    chip.hidden = !allowed.includes(chip.dataset.range);
+  }
+
+  if (!allowed.includes(state.range)) {
+    // 就近落一档：**今天 ↔ 昨天**（广告是 T+1，没有今天），
+    // 其余的（比如积分页的「全部」）落到该面板的最后一档。
+    // 这里会真的把选中态挪过去，用户看得见发生了什么，而不是被偷偷改掉。
+    const 对门 = { today: 'yesterday', yesterday: 'today' }[state.range];
+    state.range = allowed.includes(对门) ? 对门 : allowed[allowed.length - 1];
+  }
+
+  for (const chip of $('filters').querySelectorAll('.chip')) {
+    chip.classList.toggle('is-active', chip.dataset.range === state.range);
+  }
+}
+
+/** 当前面板该去哪取数。切区间、换应用、切面板都走它。 */
+function refreshActiveView({ force = false } = {}) {
+  if (state.tab === 'data') return refreshDev({ force });
+  if (state.tab === 'ad') return refreshAd({ force });
+  return Promise.resolve(); // 积分那页是本地算的，不用取
+}
+
+function switchTab(tab) {
+  if (!TABS.includes(tab)) return;
+
+  // 新面板从滑块移动的方向滑进来 —— 和上面那个滑块的位移同一个方向，
+  // 读起来才是「一件事」，而不是两个各自播的动画。
+  const from = TABS.indexOf(state.tab);
+  const to = TABS.indexOf(tab);
+  const slide = from === to ? 0 : (to > from ? 1 : -1) * 18;
+  for (const pane of [$('pane-credits'), $('pane-data'), $('pane-ad')]) {
+    pane.style.setProperty('--pane-from', `${slide}px`);
+  }
+
+  state.tab = tab;
+  for (const btn of $('tabs').querySelectorAll('.chip')) {
+    const on = btn.dataset.tab === tab;
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-selected', String(on));
+  }
+  $('pane-credits').hidden = tab !== 'credits';
+  $('pane-data').hidden = tab !== 'data';
+  $('pane-ad').hidden = tab !== 'ad';
+  syncRangeChips();
+
+  // 隐藏期间 render() 会跳过对应的那一页（见那里的注释），所以切过来时必须
+  // 主动补画一次 —— 否则会看到上一次离开时的旧内容。
+  // 图表在 display:none 下宽高为 0 本来也画不出来，这一步是必须的，不只是保险。
+  if (tab === 'credits') render();
+  else if (tab === 'data') renderDev();
+  else renderAd();
+}
+
+/** 拉应用列表。拉不到也不至于让整页空白 —— 缓存在存储里，load() 已经先把旧的填上了。 */
+async function loadDevApps(force = false) {
+  await chrome.runtime.sendMessage({ type: 'dev-apps', force }).catch(() => {});
+}
+
 // ------------------------------------------------------------------ 交互
+
+$('tabs').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('.chip');
+  if (!btn || btn.dataset.tab === state.tab) return;
+  switchTab(btn.dataset.tab);
+  // 缓存已经画在屏幕上了，这里只是去取一份更新的。
+  // 积分那页是本地算的，不用取。
+  if (state.tab !== 'credits') loadDevApps().then(() => refreshActiveView());
+});
 
 $('filters').addEventListener('click', (ev) => {
   const chip = ev.target.closest('.chip');
@@ -1026,6 +1802,10 @@ $('filters').addEventListener('click', (ev) => {
   for (const other of $('filters').querySelectorAll('.chip')) {
     other.classList.toggle('is-active', other === chip);
   }
+  // 区间统辖两个标签页。数据那页的数据是按日期区间去后台取的（本地算不出来），
+  // 所以必须**先**告诉它「我要新的这一份」再重画。
+  // 反过来写的话，重画那一帧用的还是上一个区间的数字，看着就是闪一下旧数据。
+  refreshActiveView();
   render();
 });
 
@@ -1097,7 +1877,13 @@ $('sync-btn').addEventListener('click', async () => {
 let reloadTimer = 0;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  if (!(changes.auth || changes.sync || changes.daily || changes.hourly || changes.projects)) return;
+  // 开发者后台那几个键也算 —— 漏了它们，数据那页拉回来新数据界面不会动
+  if (
+    !(
+      changes.auth || changes.sync || changes.daily || changes.hourly || changes.projects
+      || changes.devApps || changes.devPick || changes.devStats || changes.adStats
+    )
+  ) return;
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(load, 250);
 });
@@ -1128,7 +1914,16 @@ for (const chip of $('filters').querySelectorAll('.chip')) {
   chip.classList.toggle('is-active', chip.dataset.range === state.range);
 }
 
+// 浮层那份只画图，没有标签页可切；而且它带着 chart= 进来，必须停在原地
+const 初始面板 = PAGE_PARAMS.get('tab');
+if (!IS_OVERLAY) switchTab(TABS.includes(初始面板) ? 初始面板 : 'credits');
+
 load().then(() => {
   const chart = PAGE_PARAMS.get('chart');
   if (chart) openFromState(chart);
+  // 缓存在存储里的应用/数据先顶上，再去后台取一次新的。
+  // 顺序不能反：先发请求的话，这一屏会从空态闪一下再出内容。
+  if (state.tab !== 'credits') {
+    loadDevApps().then(() => refreshActiveView());
+  }
 });

@@ -10,7 +10,7 @@
     <div class="page">
       <header class="topbar">
         <div class="topbar-main">
-          <h1>积分消耗</h1>
+          <h1>TapTap 制造</h1>
           <div class="status-row">
             <span class="sub" id="status-line">正在读取数据…</span>
             <button type="button" class="icon-btn" id="sync-btn" title="刷新" aria-label="刷新数据">
@@ -25,84 +25,42 @@
         </div>
       </header>
 
-      <div class="notice" id="notice" hidden></div>
+      <div class="tabs" id="tabs" role="tablist" aria-label="看哪一份数据">
+        <button type="button" class="chip" role="tab" data-tab="credits" aria-selected="true">
+          积分消耗
+        </button>
+        <button type="button" class="chip" role="tab" data-tab="data" aria-selected="false">
+          数据表现
+        </button>
+      </div>
 
       <div class="filters" id="filters" role="group" aria-label="时间范围">
+        <!-- 哪几个显示、哪一个是选中，由 syncRangeChips() 按当前面板决定：
+             广告收益那页是「昨天 / 近7 / 近30 / 近90」（它是 T+1，没有今天）。
+             所以「昨天」这一档必须也在这里，不能只在 JS 里造一个状态。 -->
         <button type="button" class="chip" data-range="today">今天</button>
+        <button type="button" class="chip" data-range="yesterday">昨天</button>
         <button type="button" class="chip" data-range="7">近 7 天</button>
         <button type="button" class="chip" data-range="30">近 30 天</button>
         <button type="button" class="chip" data-range="90">近 90 天</button>
         <button type="button" class="chip" data-range="all">全部</button>
       </div>
 
-      <section class="hero-card">
-        <div class="hero-sub" id="hero-sub"></div>
-      </section>
+      <!-- 积分：一切照旧，只是被包进了一个可以整体隐藏的面板 -->
+      <div class="pane" id="pane-credits" role="tabpanel">
+        <div class="notice" id="notice" hidden></div>
 
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <h2 id="trend-title">消耗趋势</h2>
-            <p class="card-sub" id="trend-sub"></p>
-          </div>
-          <button type="button" class="icon-btn" id="trend-expand" title="放大查看" aria-label="放大查看">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z"
-              />
-            </svg>
-          </button>
-        </div>
-        <div id="trend-chart"></div>
-      </section>
+        <section class="hero-card">
+          <div class="hero-sub" id="hero-sub"></div>
+        </section>
 
-      <section class="tiles" id="tiles"></section>
-
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <h2>消耗构成</h2>
-            <p class="card-sub" id="kind-sub"></p>
-          </div>
-        </div>
-        <div class="kind-row" id="kind-row"></div>
-        <div class="kind-bar" id="kind-bar"></div>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <h2>各类型消耗趋势</h2>
-            <p class="card-sub" id="kind-trend-sub"></p>
-          </div>
-          <button type="button" class="icon-btn" id="kind-expand" title="放大查看" aria-label="放大查看">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z"
-              />
-            </svg>
-          </button>
-        </div>
-        <div id="kind-chart"></div>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <h2>项目对比</h2>
-            <p class="card-sub" id="project-sub"></p>
-          </div>
-          <div class="card-actions">
-            <button type="button" class="ghost-btn" id="project-reset">重置</button>
-            <button
-              type="button"
-              class="icon-btn"
-              id="project-expand"
-              title="放大查看"
-              aria-label="放大查看"
-            >
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2 id="trend-title">消耗趋势</h2>
+              <p class="card-sub" id="trend-sub"></p>
+            </div>
+            <button type="button" class="icon-btn" id="trend-expand" title="放大查看" aria-label="放大查看">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
                   fill="currentColor"
@@ -111,21 +69,163 @@
               </svg>
             </button>
           </div>
-        </div>
-        <div class="picker" id="project-picker"></div>
-        <div id="project-chart"></div>
-      </section>
+          <div id="trend-chart"></div>
+        </section>
 
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <h2>明细</h2>
-            <p class="card-sub">与图表同源，逐格可核对</p>
+        <section class="tiles" id="tiles"></section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>消耗构成</h2>
+              <p class="card-sub" id="kind-sub"></p>
+            </div>
           </div>
-          <button type="button" class="ghost-btn" id="table-btn" aria-expanded="false">展开</button>
+          <div class="kind-row" id="kind-row"></div>
+          <div class="kind-bar" id="kind-bar"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>各类型消耗趋势</h2>
+              <p class="card-sub" id="kind-trend-sub"></p>
+            </div>
+            <button type="button" class="icon-btn" id="kind-expand" title="放大查看" aria-label="放大查看">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z"
+                />
+              </svg>
+            </button>
+          </div>
+          <div id="kind-chart"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>项目对比</h2>
+              <p class="card-sub" id="project-sub"></p>
+            </div>
+            <div class="card-actions">
+              <button type="button" class="ghost-btn" id="project-reset">重置</button>
+              <button
+                type="button"
+                class="icon-btn"
+                id="project-expand"
+                title="放大查看"
+                aria-label="放大查看"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="picker" id="project-picker"></div>
+          <div id="project-chart"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>明细</h2>
+              <p class="card-sub">与图表同源，逐格可核对</p>
+            </div>
+            <button type="button" class="ghost-btn" id="table-btn" aria-expanded="false">展开</button>
+          </div>
+          <div id="table-wrap" hidden></div>
+        </section>
+      </div>
+
+      <!-- 数据表现：来源是 TapTap 开发者后台，和积分是两套完全不同的数据 -->
+      <div class="pane" id="pane-data" role="tabpanel" hidden>
+        <!--
+          自绘的下拉，不用原生 <select>：它的弹层是浏览器/系统画的，
+          CSS 管不到 —— 深色主题下照样是白底，选中项那个灰条也改不掉。
+          代价是键盘和读屏支持得自己补（role / aria-expanded / 方向键 / Esc）。
+        -->
+        <div class="dev-bar">
+          <span class="dev-label" id="dev-label">应用</span>
+          <div class="dev-picker" id="dev-picker">
+            <button
+              type="button"
+              class="dev-trigger"
+              id="dev-trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-labelledby="dev-label dev-trigger-name"
+            >
+              <img class="dev-icon" id="dev-icon" alt="" hidden />
+              <span class="dev-trigger-name" id="dev-trigger-name">加载中…</span>
+              <svg class="dev-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M7 10l5 5 5-5z" />
+              </svg>
+            </button>
+            <div class="dev-menu" id="dev-menu" role="listbox" aria-labelledby="dev-label" hidden></div>
+          </div>
         </div>
-        <div id="table-wrap" hidden></div>
-      </section>
+
+        <div class="notice" id="dev-notice" hidden></div>
+
+        <section class="tiles" id="dev-tiles"></section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>渠道曝光趋势</h2>
+              <p class="card-sub" id="dev-chart-sub"></p>
+            </div>
+          </div>
+          <div id="dev-chart"></div>
+        </section>
+      </div>
+
+      <!--
+        广告收益是**独立的一个面板**，不是数据表现里的一张卡：
+        它是 T+1 的（今天必然为空），区间口径和上面那页根本不是一套 ——
+        放在一起就得同时摆两个区间控件，谁也说不清哪个管哪个。
+        分成两页之后，页首那个区间控件跟着当前页换选项。
+      -->
+      <div class="pane" id="pane-ad" role="tabpanel" hidden>
+        <div class="dev-bar">
+          <span class="dev-label" id="ad-label">应用</span>
+          <div class="dev-picker" id="ad-picker">
+            <button
+              type="button"
+              class="dev-trigger"
+              id="ad-trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+            >
+              <span class="dev-trigger-name" id="ad-trigger-name">加载中…</span>
+              <svg class="dev-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M7 10l5 5 5-5z" />
+              </svg>
+            </button>
+            <div class="dev-menu" id="ad-menu" role="listbox" aria-label="应用" hidden></div>
+          </div>
+        </div>
+
+        <div class="notice" id="ad-notice" hidden></div>
+
+        <section class="tiles" id="ad-tiles"></section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>每日预估收益</h2>
+              <p class="card-sub" id="ad-sub"></p>
+            </div>
+          </div>
+          <div id="ad-chart"></div>
+        </section>
+      </div>
     </div>
 
     <script type="module" src="dashboard.js"></script>

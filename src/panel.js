@@ -15,6 +15,20 @@
   const HOST_ID = 'ttm-credits-root';
   const OPEN_KEY = 'panelOpen';
   const MASCOT_KEY = 'mascotMode'; // 嗒啦啦开关。没存过时算开 —— 默认就是 1
+  const VIEW_KEY = 'panelView'; // 面板顶部当前在哪一档
+
+  /**
+   * 面板的主视图。
+   *
+   * 加一档只需要在这里多加一项：滑块的分段、宽度、点击行为
+   * 全按数组长度算，别处都不用动。分段顺序 = 显示顺序。
+   * 对应的页面由仪表盘那边按 id 认（见 dashboard.js 的 switchTab）。
+   */
+  const VIEWS = [
+    { id: 'credits', name: '积分消耗' },
+    { id: 'data', name: '数据表现' },
+    { id: 'ad', name: '广告收益' },
+  ];
 
   // ── 表情合图 assets/faces.png ────────────────────────────────────────
   // 3x3，一格 175x184。这几个数字必须和 tools/make-faces.mjs 的输出对上 ——
@@ -67,6 +81,9 @@
   let mascot = null; // 外层容器，负责入场动画
   let mascotImg = null; // 图片本身，负责呼吸浮动
   let modeInput = null; // 嗒啦啦开关（真的 input，负责可访问性）
+  let viewThumb = null; // 顶部滑块的滑块本体
+  let viewSegs = []; // 分段按钮，顺序同 VIEWS
+  let activeView = VIEWS[0].id;
   let pet = null; // 面板收起时的整体容器（她 + 气泡）
   let petFace = null; // 她的表情
   let petBubble = null;
@@ -450,6 +467,70 @@
     }
     .bar-title { font-size: 13px; font-weight: 600; }
 
+    /* 顶部的主视图切换：分段滑块。
+       做成分段而不是一排标签，是因为面板只有四百来像素宽，标签一多就挤；
+       滑块把「当前在哪一档」画成一个实心块，再加档也只是多一格、等宽排开。
+       宽度全部由 --segments 推出来，加档不用改样式。 */
+    .view-switch {
+      position: relative;
+      display: flex;
+      flex: 1;
+      min-width: 0;
+      max-width: 250px;
+      padding: 2px;
+      border-radius: 999px;
+      background: var(--track);
+    }
+    .view-thumb {
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      left: 2px;
+      width: calc((100% - 4px) / var(--segments, 2));
+      border-radius: 999px;
+      background: var(--surface);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+      /* 整段整段地挪：宽度就是一段，位移按段数算百分比 */
+      transform: translateX(calc(var(--i, 0) * 100%));
+      transition: transform 200ms cubic-bezier(0.2, 0.8, 0.3, 1);
+    }
+    .view-seg {
+      position: relative;
+      z-index: 1; /* 压在滑块之上，文字才不会被盖住 */
+      flex: 1;
+      min-width: 0;
+      padding: 5px 6px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+      transition: color 160ms ease;
+    }
+    .view-seg:hover { color: var(--ink); }
+    .view-seg.is-active { color: var(--ink); font-weight: 600; }
+    .view-seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    /* 面板被拖窄时要跟着收字号，否则三个标签全变成省略号 ——
+       导航控件上出现「积分…」这种是没法用的。
+       这里必须用容器查询而不是媒体查询：面板宽度可以独立于视口拖动，
+       媒体查询看的是视口，管不到这件事。 */
+    .panel {
+      container-type: inline-size;
+    }
+    @container (max-width: 360px) {
+      .view-seg {
+        font-size: 11px;
+        padding: 5px 2px;
+      }
+    }
+
     /* 嗒啦啦的开关：滑块在前，名字在后。名字是固定的，不随开关变 ——
        它答的是「这个开关管的是谁」，开没开看滑块本身。 */
     .mode {
@@ -658,9 +739,29 @@
     const bar = document.createElement('div');
     bar.className = 'bar';
 
-    const title = document.createElement('span');
-    title.className = 'bar-title';
-    title.textContent = '积分消耗';
+    // 视图切换占了原来标题的位置：分段上的字本身就是标题，
+    // 再单独放一个「积分消耗」既重复又占地
+    const viewSwitch = document.createElement('div');
+    viewSwitch.className = 'view-switch';
+    viewSwitch.setAttribute('role', 'tablist');
+    viewSwitch.setAttribute('aria-label', '看哪一份数据');
+    viewSwitch.style.setProperty('--segments', String(VIEWS.length));
+
+    viewThumb = document.createElement('span');
+    viewThumb.className = 'view-thumb';
+    viewSwitch.append(viewThumb);
+
+    viewSegs = VIEWS.map((v) => {
+      const seg = document.createElement('button');
+      seg.type = 'button';
+      seg.className = 'view-seg';
+      seg.dataset.view = v.id;
+      seg.textContent = v.name;
+      seg.setAttribute('role', 'tab');
+      seg.addEventListener('click', () => setView(v.id));
+      viewSwitch.append(seg);
+      return seg;
+    });
 
     // 嗒啦啦的开关。文案是固定的一个名字，不随状态切换 ——
     // 这是个「开/关她」的开关，不是两个模式二选一，写「普通」只会让人
@@ -693,7 +794,7 @@
     close.setAttribute('aria-label', '收起面板');
     close.addEventListener('click', () => setOpen(false));
 
-    bar.append(title, mode, close);
+    bar.append(viewSwitch, mode, close);
 
     // 面板收起时的形态：她本人 + 一句气泡。两个热区是分开的 ——
     // 点气泡展开面板，点她本人换个表情（同一个点没法既开面板又换表情）。
@@ -776,6 +877,7 @@
     pushTheme(true);
     // 站点的路由切换可能把 body 下的东西清掉，重新挂回来后要把面板状态接上
     applyMode({ persist: false }); // 得先于 applyOpen：她要靠 data-mode 才显示得出来
+    setView(activeView, { persist: false }); // 滑块的选中态得跟上，别停在默认那档
     applyOpen(isOpen, { persist: false });
     refreshSummary();
   }
@@ -839,7 +941,10 @@
     if (isOpen && !frameLoaded) {
       // 懒加载：不展开就不去加载仪表盘，省得每次开页面都跑一遍。
       // 把主题一并带上，让它在第一帧就是对的颜色，不闪一下再切。
-      frame.src = `${chrome.runtime.getURL('src/dashboard.html')}?embed=1&theme=${siteTheme()}`;
+      // 当前视图直接写进 URL：iframe 是异步加载的，靠 postMessage 推的话
+      // 可能赶在它的监听器装好之前，消息就丢了。后面再切才走消息。
+      frame.src =
+        `${chrome.runtime.getURL('src/dashboard.html')}?embed=1&theme=${siteTheme()}&tab=${activeView}`;
       frameLoaded = true;
     }
     if (persist) {
@@ -849,6 +954,30 @@
 
   function setOpen(next) {
     applyOpen(next);
+  }
+
+  /**
+   * 切主视图。
+   *
+   * 面板和仪表盘隔着一层 iframe，所以「现在看哪一页」得推过去 ——
+   * 和主题（ttm-theme）、收起浮层（ttm-collapse）是同一条路子。
+   */
+  function setView(id, { persist = true } = {}) {
+    const i = VIEWS.findIndex((v) => v.id === id);
+    if (i < 0) return;
+    activeView = id;
+
+    if (viewThumb) viewThumb.style.setProperty('--i', String(i));
+    for (const seg of viewSegs) {
+      const on = seg.dataset.view === id;
+      seg.classList.toggle('is-active', on);
+      seg.setAttribute('aria-selected', String(on));
+    }
+
+    if (frameLoaded && frame && frame.contentWindow) {
+      frame.contentWindow.postMessage({ type: 'ttm-tab', tab: id }, '*');
+    }
+    if (persist) chrome.storage.local.set({ [VIEW_KEY]: id }).catch(() => {});
   }
 
   /** 仪表盘里开了放大浮层时把面板铺满窗口；关掉后收回原尺寸 */
@@ -1263,11 +1392,15 @@
       if (area !== 'local') return;
       if (changes.today || changes.sync || changes.auth) refreshSummary();
     });
-    chrome.storage.local.get([OPEN_KEY, MASCOT_KEY]).then((raw) => {
+    chrome.storage.local.get([OPEN_KEY, MASCOT_KEY, VIEW_KEY]).then((raw) => {
       isOpen = !!raw && raw[OPEN_KEY] === true;
       // 没存过 = 从没切过 = 用默认的嗒啦啦模式
       mascotMode = !raw || raw[MASCOT_KEY] !== false;
+      // 存过的视图 id 得先核一遍还在不在 VIEWS 里 —— 删掉某一档之后，
+      // 旧值会让滑块停在一个不存在的档位上
+      if (raw && VIEWS.some((v) => v.id === raw[VIEW_KEY])) activeView = raw[VIEW_KEY];
       applyMode({ persist: false });
+      setView(activeView, { persist: false });
       applyOpen(isOpen, { persist: false });
     }).catch(() => {});
   } catch {

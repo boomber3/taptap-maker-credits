@@ -322,7 +322,70 @@ body {
   margin: 3px 0;
 }
 
+/* ------------------------------------------------------------ 标签页 */
+
+/* 这一排和下面的 .filters 是两回事，视觉上必须拉开：
+   标签页切的是「看哪份数据」，筛选切的是「看哪段时间」。
+   所以标签用同样形状但更重的观感，并且底下压一条分隔线，让它像页头的一部分。 */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs .chip {
+  font-size: 14px;
+  padding: 7px 15px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.tabs .chip.is-active {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: var(--surface-1);
+}
+
+/* 隐藏的面板必须用 display:none —— 光靠 [hidden] 顶不住 .pane 自己的布局，
+   而且图表在 display:none 下宽高为 0，chart.js 会直接跳过绘制。 */
+.pane[hidden] {
+  display: none;
+}
+
+/* 切换时新面板滑进来。方向由 switchTab 写在 --pane-from 上，和顶部滑块的
+   位移同一个方向。display 从 none 变回来会重新触发这段动画，所以只在切换时播，
+   重画内容不会重播。 */
+.pane:not([hidden]) {
+  animation: pane-in 220ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@keyframes pane-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--pane-from, 0));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane:not([hidden]) {
+    animation: none;
+  }
+}
+
+/* 嵌在面板里时，切换在面板顶栏上 —— 这里再摆一排就重复了。
+   独立打开仪表盘（点工具栏图标）时没有那条顶栏，这排标签就是唯一的入口。 */
+:root.is-embedded #tabs {
+  display: none;
+}
+
 /* ------------------------------------------------------- 时间范围筛选行 */
+
 /* 规范：筛选控件排成一行，位于所有图表之上，并统辖下方全部内容 */
 
 .filters {
@@ -923,4 +986,212 @@ tbody tr:last-child td {
   border-bottom: none;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+/* ------------------------------------------------------- 数据表现 */
+
+/* 应用切换器。自绘下拉 —— 原生 <select> 的弹层归浏览器/系统画，
+   CSS 够不着，深色主题下一律白底、选中项是系统灰，改不动。 */
+.dev-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.dev-label {
+  flex: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* 相对定位的锚：弹层挂在它下面 */
+.dev-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.dev-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.dev-trigger:hover {
+  background: var(--wash);
+}
+
+.dev-trigger:focus-visible,
+.dev-trigger[aria-expanded='true'] {
+  outline: 2px solid var(--series-1);
+  outline-offset: 1px;
+}
+
+.dev-trigger-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dev-chevron {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  transition: transform 160ms ease;
+}
+
+.dev-trigger[aria-expanded='true'] .dev-chevron {
+  transform: rotate(180deg);
+}
+
+.dev-icon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--wash);
+}
+
+/* 弹层。面板里的 iframe 只有四百来像素宽、七百来高，16 个应用一屏放不下，
+   所以限高 + 自己滚，而不是把面板撑开。 */
+.dev-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 264px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18), 0 16px 40px rgba(0, 0, 0, 0.22);
+}
+
+.dev-menu[hidden] {
+  display: none;
+}
+
+.dev-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+/* 键盘高亮（.is-active）和已选中（aria-selected）是两回事：
+   前者跟着方向键走，后者是真正选中的那一个，可能不在高亮处。
+   所以两者给不同的视觉 —— 否则按一下方向键就分不清哪个才是当前的。 */
+.dev-option.is-active {
+  background: var(--wash);
+  color: var(--text-primary);
+}
+
+.dev-option[aria-selected='true'] {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.dev-option[aria-selected='true']::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--series-1);
+}
+
+.dev-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dev-chevron {
+    transition: none;
+  }
+}
+
+
+/* 提示块出错时左侧那道竖条变红 —— 否则和「未登录引导」长得一模一样，
+   一眼看不出这是失败而不是提示 */
+.notice.is-error {
+  border-left-color: var(--status-critical);
+}
+
+/* 正在换数据：只有图表那张卡片压暗。
+   四项指标不压暗 —— 它们里面会就地转圈，压暗反而看不清那个圈。 */
+#pane-data.is-busy .card {
+  opacity: 0.4;
+}
+
+#pane-data .card {
+  transition: opacity 140ms ease;
+}
+
+/* 卡片数字位置上的转圈图标。跟数字同高，换进换出不会让卡片跳一下 */
+.tile-spin {
+  display: inline-block;
+  width: 1.05em;
+  height: 1.05em;
+  border: 0.13em solid var(--border);
+  border-top-color: var(--text-secondary);
+  border-radius: 50%;
+  vertical-align: middle;
+  animation: dev-spin 700ms linear infinite;
+}
+
+@keyframes dev-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile-spin {
+    animation: none;
+  }
+
+  #pane-data .card {
+    transition: none;
+  }
+}
+
+/* 卡片副标题用于报错时（比如广告收益没取到）—— 默认那一行灰字太弱，
+   读起来像正常说明，得让它明显是「这里出问题了」 */
+.card-sub.is-error {
+  color: var(--status-critical);
+}
+
+/* 必写：.filters 是 flex 容器，不显式声明的话 [hidden] 的 display:none
+   可能被布局影响。和 panel.js 里的 .capsule[hidden] 是同一个坑。 */
+.chip[hidden] {
+  display: none;
 }
